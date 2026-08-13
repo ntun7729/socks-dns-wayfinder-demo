@@ -94,6 +94,24 @@ docker run -d --restart unless-stopped --name s5dns-server \
 
 The image intentionally does not contain server certificates, private keys, or credentials. Supply those at runtime through read-only mounts and environment/secret injection.
 
+### Render test deployment
+
+The repository also includes [`render.yaml`](render.yaml) and [`Dockerfile.render`](Dockerfile.render) for a Render test. The Render service is a **background worker**, not a public web service: it runs s5dns and makes outbound Cloudflare connections, while the public client continues to use the Cloudflare WSS hostname. Render documents background workers as long-running services that do not receive inbound traffic, which is the appropriate model for an outbound-only tunnel connector.[10] [11]
+
+Create the service from the repository Blueprint or create a Render background worker using `Dockerfile.render`. Add these runtime values in the Render dashboard:
+
+| Render setting | Value |
+|---|---|
+| `S5DNS_PASSWORD` | The same shared password/UUID used by clients; mark it secret. |
+| `CLOUDFLARED_TUNNEL_TOKEN` | Optional remotely-managed Cloudflare tunnel token; leave empty to run only s5dns. |
+| Secret file `server.crt` | The server certificate contents. Render makes it available at `/etc/secrets/server.crt`. |
+| Secret file `server.key` | The private key contents. Render makes it available at `/etc/secrets/server.key`. |
+| `S5DNS_DNS_UPSTREAM` | Optional, defaults to `1.1.1.1:53`. |
+
+Render supplies environment variables at runtime and supports secret files for Docker services.[12] A Cloudflare remotely-managed tunnel can be run with only its tunnel token.[13] When `CLOUDFLARED_TUNNEL_TOKEN` is empty, the Render supervisor starts only s5dns. When it is set, it starts `cloudflared tunnel --no-autoupdate run --token ...` in the same container, where the tunnel's origin remains `127.0.0.1:9443`.
+
+The principal Render image is intentionally separate from the small GHCR s5dns image because `cloudflared` needs its runtime base libraries. The Render test image includes both binaries and is larger; the standard `Dockerfile` remains the compact image for ordinary client/server deployments.
+
 ### Optional Cloudflare Tunnel profile
 
 [`compose.yaml`](compose.yaml) keeps Cloudflare optional. The `s5dns-server` service runs normally without `cloudflared`; the `cloudflared` service is placed in a separate Compose profile. The helper [`scripts/compose-up.sh`](scripts/compose-up.sh) starts only s5dns when no tunnel token is present, and automatically enables the Cloudflare profile when `CLOUDFLARED_TUNNEL_TOKEN` is set.
@@ -295,3 +313,7 @@ The multiplexed session is still carried over one TCP connection, and WSS adds C
 [7]: https://developers.cloudflare.com/tunnel/advanced/local-management/configuration-file/ "Cloudflare Tunnel — Configuration file"
 [8]: https://datatracker.ietf.org/doc/html/rfc6455 "RFC 6455 — The WebSocket Protocol"
 [9]: https://developers.cloudflare.com/network/websockets/ "Cloudflare Network — WebSockets"
+[10]: https://render.com/docs/background-workers "Render — Background Workers"
+[11]: https://render.com/docs/service-types "Render — Services and Service Types"
+[12]: https://render.com/docs/configure-environment-variables "Render — Environment Variables and Secrets"
+[13]: https://developers.cloudflare.com/tunnel/advanced/tunnel-tokens/ "Cloudflare — Tunnel Tokens"

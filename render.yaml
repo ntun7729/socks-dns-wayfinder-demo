@@ -1,0 +1,15 @@
+services:
+  - type: worker
+    name: s5dns-render-test
+    runtime: docker
+    dockerfilePath: ./Dockerfile.render
+    dockerContext: .
+    region: singapore
+    plan: starter
+    envVars:
+      - key: S5DNS_PASSWORD
+        sync: false
+      - key: CLOUDFLARED_TUNNEL_TOKEN
+        sync: false
+      - key: S5DNS_DNS_UPSTREAM
+        value: 1.1.1.1:53
