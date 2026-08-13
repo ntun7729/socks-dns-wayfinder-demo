@@ -37,7 +37,7 @@ for _ in $(seq 1 100); do
   sleep 0.05
 done
 
-"$repo_dir/s5dns" client -server 127.0.0.1:19443 -server-name localhost -ca "$work_dir/state/ca.crt" -token-file "$work_dir/state/client.token" -socks-listen 127.0.0.1:19080 -dns-listen 127.0.0.1:19535 >"$work_dir/client.log" 2>&1 &
+"$repo_dir/s5dns" client -mux -server 127.0.0.1:19443 -server-name localhost -ca "$work_dir/state/ca.crt" -token-file "$work_dir/state/client.token" -socks-listen 127.0.0.1:19080 -dns-listen 127.0.0.1:19535 >"$work_dir/client.log" 2>&1 &
 client_pid=$!
 for _ in $(seq 1 100); do
   (echo >/dev/tcp/127.0.0.1/19080) 2>/dev/null && break

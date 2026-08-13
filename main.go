@@ -24,6 +24,7 @@ const (
 	authMagic        = "S5D1"
 	roleSocks        = 1
 	roleDNS          = 2
+	roleMuxSocks     = 3
 	kindConnect      = 1
 	kindDNS          = 2
 	kindStatus       = 3
@@ -32,6 +33,9 @@ const (
 	ioTimeout        = 10 * time.Second
 	dialTimeout      = 5 * time.Second
 	maxTokenLength   = 4096
+	maxMuxPayload    = 256 << 10
+	maxMuxStreams    = 1024
+	muxOpenTimeout   = 5 * time.Second
 	defaultTCPBuffer = 1 << 20
 	copyBufferSize   = 256 << 10
 )
@@ -53,7 +57,7 @@ func main() {
 			log.Fatal(err)
 		}
 	case "version":
-		fmt.Println("s5dns 0.2.0")
+		fmt.Println("s5dns 0.3.0")
 	default:
 		usage()
 		os.Exit(2)
@@ -129,6 +133,8 @@ func handleServerConn(raw net.Conn, token, dnsUpstream string, tcpBuffer int) {
 	switch role {
 	case roleSocks:
 		handleRemoteSocks(conn, tcpBuffer)
+	case roleMuxSocks:
+		handleRemoteMux(conn, tcpBuffer)
 	case roleDNS:
 		handleRemoteDNS(conn, dnsUpstream)
 	default:
@@ -160,7 +166,7 @@ func serverAuthenticate(conn net.Conn, token string) (byte, error) {
 	if subtle.ConstantTimeCompare([]byte(token), presented) != 1 {
 		return 0, errProtocol
 	}
-	if role != roleSocks && role != roleDNS {
+	if role != roleSocks && role != roleDNS && role != roleMuxSocks {
 		return 0, errProtocol
 	}
 	if err := writeAll(conn, []byte{0}); err != nil {
@@ -230,6 +236,7 @@ func runClient(args []string) error {
 	tokenFile := fs.String("token-file", "/etc/s5dns/client.token", "shared token file")
 	socksListen := fs.String("socks-listen", "127.0.0.1:1080", "local SOCKS5 TCP address")
 	dnsListen := fs.String("dns-listen", "127.0.0.1:5353", "local DNS UDP address")
+	mux := fs.Bool("mux", false, "reuse one authenticated TLS session for multiple SOCKS streams")
 	tcpBuffer := fs.Int("tcp-buffer", defaultTCPBuffer, "TCP read/write buffer size in bytes")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -268,7 +275,11 @@ func runClient(args []string) error {
 	defer dns.Close()
 	log.Printf("client SOCKS5 listening on %s; DNS listening on %s", *socksListen, *dnsListen)
 
-	go acceptSocks(socks, *serverAddr, token, tlsConfig, *tcpBuffer)
+	if *mux {
+		go acceptMuxSocks(socks, *serverAddr, token, tlsConfig, *tcpBuffer)
+	} else {
+		go acceptSocks(socks, *serverAddr, token, tlsConfig, *tcpBuffer)
+	}
 	go serveDNS(dns, *serverAddr, token, tlsConfig, *tcpBuffer)
 
 	sigCh := make(chan os.Signal, 1)
@@ -535,7 +546,7 @@ var copyPool = sync.Pool{
 	New: func() any { return make([]byte, copyBufferSize) },
 }
 
-func proxyBidirectional(a, b net.Conn) {
+func proxyBidirectional(a, b io.ReadWriteCloser) {
 	done := make(chan struct{}, 2)
 	go copyStream(a, b, done)
 	go copyStream(b, a, done)

@@ -60,6 +60,7 @@ Then start the client:
 
 ```bash
 sudo ./s5dns client \
+  -mux \
   -server 127.0.0.1:8443 \
   -server-name localhost \
   -ca ./state/ca.crt \
@@ -68,7 +69,7 @@ sudo ./s5dns client \
   -dns-listen 127.0.0.1:5353
 ```
 
-For a real two-host deployment, bind the server to an externally reachable address, allow only the chosen TLS port through the host firewall, and use a certificate whose SAN matches the server name passed to the client. Do not expose the server with an empty or shared public token.
+For a real two-host deployment, bind the server to an externally reachable address, allow only the chosen TLS port through the host firewall, and use a certificate whose SAN matches the server name passed to the client. Do not expose the server with an empty or shared public token. The `-mux` flag is recommended; omitting it keeps the older one-TLS-connection-per-SOCKS-request behavior for compatibility testing.
 
 ## Install as systemd services
 
@@ -121,19 +122,29 @@ A separate root-capable benchmark compares direct loopback TCP throughput with t
 sudo ./tests/speed.sh
 ```
 
-This is a **relative local overhead measurement**, not an internet speed test. It excludes WAN latency, server geography, congestion, and external resolver performance. The original development-sandbox result was approximately **41.46 Gbit/s direct loopback versus 7.65 Gbit/s through SOCKS5/TLS**, or **81.55% lower median throughput**. After adding pooled `io.CopyBuffer` forwarding, 1 MiB TCP socket buffers, and a TLS client session cache, the rerun measured **38.48 Gbit/s direct versus 7.12 Gbit/s through SOCKS5/TLS**, or **81.49% lower median throughput**. That change is statistically inconclusive on this synthetic loopback benchmark, so the optimizations should be judged on WAN and multi-connection workloads rather than this single-flow number. Run it on the target Ubuntu host for meaningful capacity planning.
+This is a **relative local overhead measurement**, not an internet speed test. It excludes WAN latency, server geography, congestion, and external resolver performance. The original development-sandbox result was approximately **41.46 Gbit/s direct loopback versus 7.65 Gbit/s through SOCKS5/TLS**, or **81.55% lower median throughput**. After adding pooled `io.CopyBuffer` forwarding, 1 MiB TCP socket buffers, and a TLS client session cache, the latest multiplexed rerun measured **23.54 Gbit/s direct versus 5.85 Gbit/s through SOCKS5/TLS**, or **75.17% lower median throughput**. The direct loopback baseline varies substantially in this virtualized sandbox, so this should not be read as a definitive single-flow gain; the concurrent result is the more relevant measurement for the multiplexed design. Run it on the target Ubuntu host for meaningful capacity planning.
 
-A progressive streaming test is also included. It sends 40 paced 256 KiB chunks, verifies that HTTP-like headers and body bytes arrive before the full stream completes, and measures sustained delivery through SOCKS5/TLS:
+A progressive streaming test is also included. It sends 40 paced 256 KiB chunks, verifies that HTTP-like headers and body bytes arrive before the full stream completes, and measures sustained delivery through multiplexed SOCKS5/TLS:
 
 ```bash
 sudo ./tests/streaming.sh
 ```
 
-The root sandbox run delivered **10 MiB** in approximately **0.993 seconds** at **84.48 Mbit/s**, with headers and the first body bytes arriving after approximately **5.5 ms**. This is a local streaming-path check, not a real internet video-streaming measurement.
+The latest root sandbox run delivered **10 MiB** in approximately **0.993 seconds** at **84.44 Mbit/s**, with headers and the first body bytes arriving after approximately **5.4 ms**. This is a local streaming-path check, not a real internet video-streaming measurement.
+
+The concurrent benchmark opens **eight simultaneous SOCKS5 flows**, each carrying 8 MiB through the shared multiplexed session:
+
+```bash
+sudo ./tests/concurrent.sh
+```
+
+The latest root run completed successfully with approximately **5.92 Gbit/s aggregate throughput** and per-stream completion times around **82–90 ms**. This measures concurrent local capacity and multiplexing correctness, not WAN performance.
 
 ## Limitations and next decisions
 
-The prototype still uses one TLS connection per SOCKS5 or DNS request rather than a multiplexed session. The forwarding path now uses pooled `io.CopyBuffer` buffers, tunable TCP read/write buffers through `-tcp-buffer`, and a client TLS session cache for reconnects. It supports only TCP `CONNECT` and DNS-over-UDP forwarding, has no access-control list beyond the shared token, and does not offer transparent routing. A production follow-up would need persistent multiplexed streams, a stronger identity lifecycle than a bearer token, policy controls, metrics, structured audit logs, and a careful treatment of DNS-over-TCP and EDNS behavior.
+The client supports an optimized `-mux` mode (release `0.3.0`) that authenticates once and carries multiple SOCKS5 streams over one persistent TLS connection. It uses bounded frames, a single serialized writer, per-stream receive queues, stream reset and half-close handling, a maximum concurrent-stream limit, and reconnect-on-next-request behavior. Existing open TCP streams are not replayed after a session loss. The forwarding path also uses pooled `io.CopyBuffer` buffers, tunable TCP read/write buffers through `-tcp-buffer`, and a client TLS session cache for reconnects. It supports only TCP `CONNECT` and DNS-over-UDP forwarding, has no access-control list beyond the shared token, and does not offer transparent routing.
+
+The multiplexed session is still carried over one TCP connection, so TCP-level head-of-line blocking remains possible. A production follow-up would need stronger identity lifecycle management, policy controls, metrics, structured audit logs, careful DNS-over-TCP and EDNS behavior, and a decision about whether QUIC is justified for lossy or high-latency networks.
 
 ## References
 
