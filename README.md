@@ -115,6 +115,14 @@ The repository includes a local test script that starts an ephemeral server and 
 
 The test uses only loopback services and does not require a public internet destination. It is therefore safe to run in a development VM, although the implementation itself should still be treated as experimental.
 
+A separate root-capable benchmark compares direct loopback TCP throughput with the same payload sent through the SOCKS5/TLS path. It uses an in-process local sink, three 32 MiB samples per mode, and reports median throughput and median loss:
+
+```bash
+sudo ./tests/speed.sh
+```
+
+This is a **relative local overhead measurement**, not an internet speed test. It excludes WAN latency, server geography, congestion, and external resolver performance. The measured result in the development sandbox was approximately **41.46 Gbit/s direct loopback versus 7.65 Gbit/s through SOCKS5/TLS**, or **81.55% lower median throughput** under that specific six-CPU virtualized environment. Run it on the target Ubuntu host for meaningful capacity planning.
+
 ## Limitations and next decisions
 
 The prototype has one TLS connection per SOCKS5 or DNS request rather than a multiplexed session. It supports only TCP `CONNECT` and DNS-over-UDP forwarding, has no access-control list beyond the shared token, and does not offer transparent routing. A production follow-up would need connection multiplexing, a stronger identity lifecycle than a bearer token, policy controls, metrics, structured audit logs, and a careful treatment of DNS-over-TCP and EDNS behavior.
