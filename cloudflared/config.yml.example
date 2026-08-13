@@ -1,0 +1,11 @@
+# Local-managed Cloudflare Tunnel configuration.
+# Replace the tunnel UUID, credentials path, and hostname before use.
+tunnel: REPLACE_WITH_TUNNEL_UUID
+credentials-file: /etc/cloudflared/REPLACE_WITH_TUNNEL_UUID.json
+
+ingress:
+  - hostname: vpn.example.com
+    service: tcp://127.0.0.1:8443
+    originRequest:
+      connectTimeout: 10s
+  - service: http_status:404

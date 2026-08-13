@@ -1,0 +1,9 @@
+tunnel: c3e80ea7-1044-4366-b8db-46e20eaa3cde
+credentials-file: /etc/cloudflared/c3e80ea7-1044-4366-b8db-46e20eaa3cde.json
+
+ingress:
+  - hostname: s5-edge-421b01.nyan.college
+    service: tcp://127.0.0.1:8443
+    originRequest:
+      connectTimeout: 10s
+  - service: http_status:404

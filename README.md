@@ -90,6 +90,59 @@ sudo systemctl status s5dns-server.service s5dns-client.service
 
 The sample units assume that the client and server run on the same host and use `127.0.0.1:8443`. For a split deployment, edit `systemd/s5dns-client.service` before installation so that `-server` points to the remote server, then copy the CA and client token to the client host.
 
+## Use through Cloudflare Tunnel
+
+Cloudflare Tunnel can carry the existing encrypted s5dns TCP endpoint as an **outer transport**. Cloudflare’s Arbitrary TCP mode requires `cloudflared` on both the host and client, a Cloudflare account with a site/hostname, and an Access policy for the published hostname.[5] The inner s5dns TLS certificate and shared token remain enabled, so Cloudflare Access and s5dns provide separate authentication layers. The sandbox is currently configured with `cloudflared` **2026.7.3**, tunnel `s5dns-mux`, and hostname `s5-edge-421b01.nyan.college`.
+
+The host-side path is:
+
+```text
+s5dns server 127.0.0.1:8443
+        │
+        └── cloudflared Tunnel → Cloudflare Access hostname
+```
+
+On the Ubuntu host, install the package and prepare the service artifacts:
+
+```bash
+sudo ./scripts/install-cloudflared.sh
+sudo install -m 0640 -o root -g cloudflared \
+  cloudflared/tunnel.env.example /etc/cloudflared/tunnel.env
+sudoedit /etc/cloudflared/tunnel.env
+```
+
+Replace `TUNNEL_TOKEN` with the token from the Cloudflare Zero Trust dashboard, configure the published hostname to route to `tcp://127.0.0.1:8443`, then start the services:
+
+```bash
+sudo systemctl enable --now s5dns-server.service
+sudo systemctl enable --now cloudflared-s5dns.service
+sudo systemctl status s5dns-server.service cloudflared-s5dns.service
+```
+
+For a locally managed tunnel, use [`cloudflared/config.yml.example`](cloudflared/config.yml.example), replace its tunnel UUID, credentials path, and hostname, and follow Cloudflare’s `tunnel login`, `tunnel create`, DNS-route, and `tunnel run` workflow.[6] The configuration must end with the included catch-all rule.[7]
+
+On each client device, install `cloudflared`, then run the Access TCP forward. Cloudflare Access may open a browser for SSO:
+
+```bash
+cloudflared access tcp \
+  --hostname s5-edge-421b01.nyan.college \
+  --url 127.0.0.1:18443
+```
+
+In a second terminal, point the s5dns client at the local forwarded port while preserving the inner certificate and token:
+
+```bash
+sudo ./s5dns client -mux \
+  -server 127.0.0.1:18443 \
+  -server-name localhost \
+  -ca ./state/ca.crt \
+  -token-file ./state/client.token \
+  -socks-listen 127.0.0.1:1080 \
+  -dns-listen 127.0.0.1:5353
+```
+
+The checked-in helper [`cloudflared/access-client.example.sh`](cloudflared/access-client.example.sh) contains the same client-side pattern. The live non-secret configuration is in [`cloudflared/s5dns-mux.yml`](cloudflared/s5dns-mux.yml), while the tunnel credential remains outside the repository under `/etc/cloudflared/`. The connector is currently active with four registered Cloudflare edge connections. The end-to-end sandbox check passed through the generated hostname for SOCKS5 TCP and public DNS forwarding. A separate Cloudflare Access application policy should be added in the dashboard if you want SSO/MFA enforcement on the hostname; the inner s5dns token remains mandatory regardless.
+
 ## Use the local interfaces
 
 For SOCKS-aware tools:
@@ -152,3 +205,6 @@ The multiplexed session is still carried over one TCP connection, so TCP-level h
 [2]: https://datatracker.ietf.org/doc/html/rfc1035 "RFC 1035 — Domain Names: Implementation and Specification"
 [3]: https://pkg.go.dev/crypto/tls "Go crypto/tls package"
 [4]: https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html "systemd.exec execution environment configuration"
+[5]: https://developers.cloudflare.com/cloudflare-one/access-controls/applications/non-http/cloudflared-authentication/arbitrary-tcp/ "Cloudflare One — Arbitrary TCP"
+[6]: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/local-management/create-local-tunnel/ "Cloudflare One — Create a locally-managed tunnel"
+[7]: https://developers.cloudflare.com/tunnel/advanced/local-management/configuration-file/ "Cloudflare Tunnel — Configuration file"

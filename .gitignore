@@ -8,3 +8,7 @@ state/
 # Python cache
 __pycache__/
 *.pyc
+
+# Cloudflare credentials and local secrets
+cloudflared/*.json
+cloudflared/tunnel.env
