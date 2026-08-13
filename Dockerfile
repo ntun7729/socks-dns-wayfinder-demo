@@ -1,17 +1,25 @@
 # syntax=docker/dockerfile:1.7
 
+# Default Dockerfile: Render-compatible WSS-only service.
+# The compact GHCR image is built separately from Dockerfile.compact.
 FROM --platform=$BUILDPLATFORM golang:1.22-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-ARG TARGETOS
-ARG TARGETARCH
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags='-s -w -buildid=' -o /out/s5dns .
+    go build -trimpath -ldflags='-s -w -buildid=' -o /out/s5dns . \
+ && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags='-s -w -buildid=' -o /out/render-supervisor ./cmd/render-supervisor
 
-FROM scratch
-COPY --from=build /out/s5dns /s5dns
+FROM cloudflare/cloudflared:2026.7.3 AS cloudflared
+
+FROM gcr.io/distroless/base-debian13:nonroot@sha256:b78832f41c8128046807c24840ebee4f1c18ba7870eed423d8750c272c15e147
+COPY --from=build /out/s5dns /usr/local/bin/s5dns
+COPY --from=build /out/render-supervisor /usr/local/bin/render-supervisor
+COPY --from=cloudflared /usr/local/bin/cloudflared /usr/local/bin/cloudflared
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 USER 65532:65532
-ENTRYPOINT ["/s5dns"]
+ENTRYPOINT ["/usr/local/bin/render-supervisor"]

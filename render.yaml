@@ -2,7 +2,7 @@ services:
   - type: web
     name: s5dns-render-test
     runtime: docker
-    dockerfilePath: ./Dockerfile.render
+    dockerfilePath: ./Dockerfile
     dockerContext: .
     dockerCommand: /usr/local/bin/render-supervisor
     region: singapore
