@@ -4,17 +4,17 @@ A decision-ready and implementable specification for a **root-run Ubuntu user-sp
 
 ## Notes
 
-This is an engineering demo of the Wayfinder workflow. The tracker is GitHub Issues in this repository. The implementation may use a single binary with client and server roles, an authenticated encrypted stream transport, explicit SOCKS5 CONNECT handling, and DNS forwarding without attempting transparent system-wide routing. No TUN/TAP, raw packet interception, or unrelated stealth/evasion behavior is in scope.
+This is an engineering demo of the Wayfinder workflow. The tracker is GitHub Issues in this repository. The implementation uses a single binary with client and server roles, an authenticated encrypted stream transport, explicit SOCKS5 CONNECT handling, and DNS forwarding without attempting transparent system-wide routing. No TUN/TAP, raw packet interception, or unrelated stealth/evasion behavior is in scope.
 
 ## Decisions so far
 
+- [Decide secure transport and cryptographic boundary](https://github.com/ntun7729/socks-dns-wayfinder-demo/issues/2) — Use TLS 1.3 per request with a private CA, configured server-name verification, and a shared bearer token; do not add a separate control plane.
+
 ## Not yet specified
 
-- The transport and cryptographic boundary, including whether the first prototype uses TLS, Noise, or a standard secure tunnel library.
-- The exact SOCKS5 authentication, stream framing, connection lifecycle, and error semantics.
-- The DNS behavior: SOCKS-resolved names versus an explicit DNS forwarding endpoint, UDP/TCP policy, and local resolver integration.
-- The exposure model, least-privilege posture, secret handling, and systemd hardening for root deployment.
-- The acceptance criteria, interoperability checks, and limits of a user-space proxy that is not a transparent VPN.
+- The exact acceptance criteria and evidence for the SOCKS5/DNS behavior, authentication rejection, TLS verification, and no-TUN/TAP boundary remain in [Define acceptance tests and scope-boundary evidence](https://github.com/ntun7729/socks-dns-wayfinder-demo/issues/5).
+- The production-level Ubuntu service and secret policy remains in [Choose Ubuntu service, secret, and privilege model](https://github.com/ntun7729/socks-dns-wayfinder-demo/issues/4).
+- The broader SOCKS5 and DNS behavior decision remains in [Define SOCKS5 commands and DNS forwarding behavior](https://github.com/ntun7729/socks-dns-wayfinder-demo/issues/3).
 
 ## Out of scope
 
