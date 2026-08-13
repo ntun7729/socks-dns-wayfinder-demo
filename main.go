@@ -15,22 +15,25 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
 
 const (
-	authMagic      = "S5D1"
-	roleSocks      = 1
-	roleDNS        = 2
-	kindConnect    = 1
-	kindDNS        = 2
-	kindStatus     = 3
-	maxFrame       = 1 << 20
-	maxDNSMessage  = 4096
-	ioTimeout      = 10 * time.Second
-	dialTimeout    = 5 * time.Second
-	maxTokenLength = 4096
+	authMagic        = "S5D1"
+	roleSocks        = 1
+	roleDNS          = 2
+	kindConnect      = 1
+	kindDNS          = 2
+	kindStatus       = 3
+	maxFrame         = 1 << 20
+	maxDNSMessage    = 4096
+	ioTimeout        = 10 * time.Second
+	dialTimeout      = 5 * time.Second
+	maxTokenLength   = 4096
+	defaultTCPBuffer = 1 << 20
+	copyBufferSize   = 256 << 10
 )
 
 var errProtocol = errors.New("protocol error")
@@ -50,7 +53,7 @@ func main() {
 			log.Fatal(err)
 		}
 	case "version":
-		fmt.Println("s5dns 0.1.0")
+		fmt.Println("s5dns 0.2.0")
 	default:
 		usage()
 		os.Exit(2)
@@ -68,6 +71,7 @@ func runServer(args []string) error {
 	keyFile := fs.String("key", "/etc/s5dns/server.key", "server private key PEM")
 	tokenFile := fs.String("token-file", "/etc/s5dns/server.token", "shared token file")
 	dnsUpstream := fs.String("dns-upstream", "1.1.1.1:53", "upstream DNS UDP address")
+	tcpBuffer := fs.Int("tcp-buffer", defaultTCPBuffer, "TCP read/write buffer size in bytes")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -100,16 +104,17 @@ func runServer(args []string) error {
 			log.Printf("accept: %v", err)
 			continue
 		}
-		go handleServerConn(conn, token, *dnsUpstream)
+		go handleServerConn(conn, token, *dnsUpstream, *tcpBuffer)
 	}
 }
 
-func handleServerConn(raw net.Conn, token, dnsUpstream string) {
+func handleServerConn(raw net.Conn, token, dnsUpstream string, tcpBuffer int) {
 	defer raw.Close()
 	conn, ok := raw.(*tls.Conn)
 	if !ok {
 		return
 	}
+	tuneTCP(conn.NetConn(), tcpBuffer)
 	_ = conn.SetDeadline(time.Now().Add(ioTimeout))
 	if err := conn.Handshake(); err != nil {
 		log.Printf("TLS handshake from %s: %v", conn.RemoteAddr(), err)
@@ -123,7 +128,7 @@ func handleServerConn(raw net.Conn, token, dnsUpstream string) {
 	_ = conn.SetDeadline(time.Time{})
 	switch role {
 	case roleSocks:
-		handleRemoteSocks(conn)
+		handleRemoteSocks(conn, tcpBuffer)
 	case roleDNS:
 		handleRemoteDNS(conn, dnsUpstream)
 	default:
@@ -164,7 +169,7 @@ func serverAuthenticate(conn net.Conn, token string) (byte, error) {
 	return role, nil
 }
 
-func handleRemoteSocks(conn net.Conn) {
+func handleRemoteSocks(conn net.Conn, tcpBuffer int) {
 	kind, payload, err := readFrame(conn, 65535)
 	if err != nil || kind != kindConnect {
 		return
@@ -174,7 +179,7 @@ func handleRemoteSocks(conn net.Conn) {
 		_ = writeFrame(conn, kindStatus, []byte{1})
 		return
 	}
-	remote, err := net.DialTimeout("tcp", target, dialTimeout)
+	remote, err := dialTCP(target, tcpBuffer)
 	if err != nil {
 		_ = writeFrame(conn, kindStatus, []byte{mapDialError(err)})
 		return
@@ -225,6 +230,7 @@ func runClient(args []string) error {
 	tokenFile := fs.String("token-file", "/etc/s5dns/client.token", "shared token file")
 	socksListen := fs.String("socks-listen", "127.0.0.1:1080", "local SOCKS5 TCP address")
 	dnsListen := fs.String("dns-listen", "127.0.0.1:5353", "local DNS UDP address")
+	tcpBuffer := fs.Int("tcp-buffer", defaultTCPBuffer, "TCP read/write buffer size in bytes")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -241,9 +247,10 @@ func runClient(args []string) error {
 		return fmt.Errorf("parse CA: no certificates found")
 	}
 	tlsConfig := &tls.Config{
-		RootCAs:    pool,
-		ServerName: *serverName,
-		MinVersion: tls.VersionTLS13,
+		RootCAs:            pool,
+		ServerName:         *serverName,
+		MinVersion:         tls.VersionTLS13,
+		ClientSessionCache: tls.NewLRUClientSessionCache(128),
 	}
 	socks, err := net.Listen("tcp", *socksListen)
 	if err != nil {
@@ -261,8 +268,8 @@ func runClient(args []string) error {
 	defer dns.Close()
 	log.Printf("client SOCKS5 listening on %s; DNS listening on %s", *socksListen, *dnsListen)
 
-	go acceptSocks(socks, *serverAddr, token, tlsConfig)
-	go serveDNS(dns, *serverAddr, token, tlsConfig)
+	go acceptSocks(socks, *serverAddr, token, tlsConfig, *tcpBuffer)
+	go serveDNS(dns, *serverAddr, token, tlsConfig, *tcpBuffer)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -270,7 +277,7 @@ func runClient(args []string) error {
 	return nil
 }
 
-func acceptSocks(ln net.Listener, serverAddr, token string, tlsConfig *tls.Config) {
+func acceptSocks(ln net.Listener, serverAddr, token string, tlsConfig *tls.Config, tcpBuffer int) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -280,12 +287,13 @@ func acceptSocks(ln net.Listener, serverAddr, token string, tlsConfig *tls.Confi
 			log.Printf("accept SOCKS5: %v", err)
 			continue
 		}
-		go handleSocksClient(conn, serverAddr, token, tlsConfig)
+		go handleSocksClient(conn, serverAddr, token, tlsConfig, tcpBuffer)
 	}
 }
 
-func handleSocksClient(local net.Conn, serverAddr, token string, tlsConfig *tls.Config) {
+func handleSocksClient(local net.Conn, serverAddr, token string, tlsConfig *tls.Config, tcpBuffer int) {
 	defer local.Close()
+	tuneTCP(local, tcpBuffer)
 	_ = local.SetDeadline(time.Now().Add(ioTimeout))
 	if err := socksHandshake(local); err != nil {
 		return
@@ -295,7 +303,7 @@ func handleSocksClient(local net.Conn, serverAddr, token string, tlsConfig *tls.
 		_ = sendSocksReply(local, 1)
 		return
 	}
-	transport, err := dialTransport(serverAddr, token, tlsConfig, roleSocks)
+	transport, err := dialTransport(serverAddr, token, tlsConfig, roleSocks, tcpBuffer)
 	if err != nil {
 		_ = sendSocksReply(local, 1)
 		return
@@ -447,7 +455,7 @@ func sendSocksReply(conn net.Conn, rep byte) error {
 	return writeAll(conn, []byte{5, rep, 0, 1, 0, 0, 0, 0, 0, 0})
 }
 
-func serveDNS(conn *net.UDPConn, serverAddr, token string, tlsConfig *tls.Config) {
+func serveDNS(conn *net.UDPConn, serverAddr, token string, tlsConfig *tls.Config, tcpBuffer int) {
 	buffer := make([]byte, 65535)
 	for {
 		n, peer, err := conn.ReadFromUDP(buffer)
@@ -463,7 +471,7 @@ func serveDNS(conn *net.UDPConn, serverAddr, token string, tlsConfig *tls.Config
 		}
 		query := append([]byte(nil), buffer[:n]...)
 		go func() {
-			response, err := forwardDNS(serverAddr, token, tlsConfig, query)
+			response, err := forwardDNS(serverAddr, token, tlsConfig, query, tcpBuffer)
 			if err != nil {
 				log.Printf("DNS request from %s: %v", peer, err)
 				return
@@ -475,8 +483,8 @@ func serveDNS(conn *net.UDPConn, serverAddr, token string, tlsConfig *tls.Config
 	}
 }
 
-func forwardDNS(serverAddr, token string, tlsConfig *tls.Config, query []byte) ([]byte, error) {
-	transport, err := dialTransport(serverAddr, token, tlsConfig, roleDNS)
+func forwardDNS(serverAddr, token string, tlsConfig *tls.Config, query []byte, tcpBuffer int) ([]byte, error) {
+	transport, err := dialTransport(serverAddr, token, tlsConfig, roleDNS, tcpBuffer)
 	if err != nil {
 		return nil, err
 	}
@@ -492,8 +500,8 @@ func forwardDNS(serverAddr, token string, tlsConfig *tls.Config, query []byte) (
 	return payload[1:], nil
 }
 
-func dialTransport(serverAddr, token string, tlsConfig *tls.Config, role byte) (net.Conn, error) {
-	base, err := net.DialTimeout("tcp", serverAddr, dialTimeout)
+func dialTransport(serverAddr, token string, tlsConfig *tls.Config, role byte, tcpBuffer int) (net.Conn, error) {
+	base, err := dialTCP(serverAddr, tcpBuffer)
 	if err != nil {
 		return nil, err
 	}
@@ -523,20 +531,44 @@ func dialTransport(serverAddr, token string, tlsConfig *tls.Config, role byte) (
 	return conn, nil
 }
 
+var copyPool = sync.Pool{
+	New: func() any { return make([]byte, copyBufferSize) },
+}
+
 func proxyBidirectional(a, b net.Conn) {
 	done := make(chan struct{}, 2)
-	go func() {
-		_, _ = io.Copy(a, b)
-		done <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(b, a)
-		done <- struct{}{}
-	}()
+	go copyStream(a, b, done)
+	go copyStream(b, a, done)
 	<-done
 	_ = a.Close()
 	_ = b.Close()
 	<-done
+}
+
+func copyStream(dst io.Writer, src io.Reader, done chan<- struct{}) {
+	buf := copyPool.Get().([]byte)
+	_, _ = io.CopyBuffer(dst, src, buf)
+	copyPool.Put(buf)
+	done <- struct{}{}
+}
+
+func dialTCP(address string, tcpBuffer int) (net.Conn, error) {
+	dialer := net.Dialer{Timeout: dialTimeout}
+	conn, err := dialer.Dial("tcp", address)
+	if err == nil {
+		tuneTCP(conn, tcpBuffer)
+	}
+	return conn, err
+}
+
+func tuneTCP(conn net.Conn, tcpBuffer int) {
+	if tcpBuffer <= 0 {
+		return
+	}
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.SetReadBuffer(tcpBuffer)
+		_ = tcp.SetWriteBuffer(tcpBuffer)
+	}
 }
 
 func writeFrame(w io.Writer, kind byte, payload []byte) error {

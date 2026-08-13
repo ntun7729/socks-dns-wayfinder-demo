@@ -121,11 +121,19 @@ A separate root-capable benchmark compares direct loopback TCP throughput with t
 sudo ./tests/speed.sh
 ```
 
-This is a **relative local overhead measurement**, not an internet speed test. It excludes WAN latency, server geography, congestion, and external resolver performance. The measured result in the development sandbox was approximately **41.46 Gbit/s direct loopback versus 7.65 Gbit/s through SOCKS5/TLS**, or **81.55% lower median throughput** under that specific six-CPU virtualized environment. Run it on the target Ubuntu host for meaningful capacity planning.
+This is a **relative local overhead measurement**, not an internet speed test. It excludes WAN latency, server geography, congestion, and external resolver performance. The original development-sandbox result was approximately **41.46 Gbit/s direct loopback versus 7.65 Gbit/s through SOCKS5/TLS**, or **81.55% lower median throughput**. After adding pooled `io.CopyBuffer` forwarding, 1 MiB TCP socket buffers, and a TLS client session cache, the rerun measured **38.48 Gbit/s direct versus 7.12 Gbit/s through SOCKS5/TLS**, or **81.49% lower median throughput**. That change is statistically inconclusive on this synthetic loopback benchmark, so the optimizations should be judged on WAN and multi-connection workloads rather than this single-flow number. Run it on the target Ubuntu host for meaningful capacity planning.
+
+A progressive streaming test is also included. It sends 40 paced 256 KiB chunks, verifies that HTTP-like headers and body bytes arrive before the full stream completes, and measures sustained delivery through SOCKS5/TLS:
+
+```bash
+sudo ./tests/streaming.sh
+```
+
+The root sandbox run delivered **10 MiB** in approximately **0.993 seconds** at **84.48 Mbit/s**, with headers and the first body bytes arriving after approximately **5.5 ms**. This is a local streaming-path check, not a real internet video-streaming measurement.
 
 ## Limitations and next decisions
 
-The prototype has one TLS connection per SOCKS5 or DNS request rather than a multiplexed session. It supports only TCP `CONNECT` and DNS-over-UDP forwarding, has no access-control list beyond the shared token, and does not offer transparent routing. A production follow-up would need connection multiplexing, a stronger identity lifecycle than a bearer token, policy controls, metrics, structured audit logs, and a careful treatment of DNS-over-TCP and EDNS behavior.
+The prototype still uses one TLS connection per SOCKS5 or DNS request rather than a multiplexed session. The forwarding path now uses pooled `io.CopyBuffer` buffers, tunable TCP read/write buffers through `-tcp-buffer`, and a client TLS session cache for reconnects. It supports only TCP `CONNECT` and DNS-over-UDP forwarding, has no access-control list beyond the shared token, and does not offer transparent routing. A production follow-up would need persistent multiplexed streams, a stronger identity lifecycle than a bearer token, policy controls, metrics, structured audit logs, and a careful treatment of DNS-over-TCP and EDNS behavior.
 
 ## References
 
