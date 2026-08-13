@@ -75,6 +75,7 @@ func runServer(args []string) error {
 	keyFile := fs.String("key", "/etc/s5dns/server.key", "server private key PEM")
 	tokenFile := fs.String("token-file", "/etc/s5dns/server.token", "shared token file")
 	dnsUpstream := fs.String("dns-upstream", "1.1.1.1:53", "upstream DNS UDP address")
+	wsListen := fs.String("ws-listen", "127.0.0.1:9443", "loopback WebSocket HTTP origin address; empty disables it")
 	tcpBuffer := fs.Int("tcp-buffer", defaultTCPBuffer, "TCP read/write buffer size in bytes")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -98,6 +99,13 @@ func runServer(args []string) error {
 	}
 	defer ln.Close()
 	log.Printf("server listening on %s; DNS upstream %s", *listen, *dnsUpstream)
+	if *wsListen != "" {
+		go func() {
+			if err := serveWebsocket(*wsListen, token, *dnsUpstream, *tcpBuffer); err != nil {
+				log.Printf("WebSocket origin stopped: %v", err)
+			}
+		}()
+	}
 
 	for {
 		conn, err := ln.Accept()
@@ -232,32 +240,43 @@ func runClient(args []string) error {
 	fs := flag.NewFlagSet("client", flag.ContinueOnError)
 	serverAddr := fs.String("server", "127.0.0.1:8443", "remote TLS server address")
 	serverName := fs.String("server-name", "localhost", "TLS server name")
-	caFile := fs.String("ca", "/etc/s5dns/ca.crt", "trusted CA certificate PEM")
+	caFile := fs.String("ca", "/etc/s5dns/ca.crt", "trusted CA certificate PEM for raw TLS or ws transport; not needed for wss")
 	tokenFile := fs.String("token-file", "/etc/s5dns/client.token", "shared token file")
 	socksListen := fs.String("socks-listen", "127.0.0.1:1080", "local SOCKS5 TCP address")
 	dnsListen := fs.String("dns-listen", "127.0.0.1:5353", "local DNS UDP address")
+	websocketURL := fs.String("websocket-url", "", "domain-only WebSocket URL, for example wss://edge.example.com/s5dns")
 	mux := fs.Bool("mux", false, "reuse one authenticated TLS session for multiple SOCKS streams")
 	tcpBuffer := fs.Int("tcp-buffer", defaultTCPBuffer, "TCP read/write buffer size in bytes")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if *websocketURL != "" && !*mux {
+		return fmt.Errorf("-websocket-url requires -mux")
+	}
+	if *websocketURL != "" {
+		if _, err := validateWebsocketURL(*websocketURL); err != nil {
+			return err
+		}
+	}
 	token, err := readToken(*tokenFile)
 	if err != nil {
 		return fmt.Errorf("read token: %w", err)
 	}
-	ca, err := os.ReadFile(*caFile)
-	if err != nil {
-		return fmt.Errorf("read CA: %w", err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(ca) {
-		return fmt.Errorf("parse CA: no certificates found")
-	}
 	tlsConfig := &tls.Config{
-		RootCAs:            pool,
 		ServerName:         *serverName,
 		MinVersion:         tls.VersionTLS13,
 		ClientSessionCache: tls.NewLRUClientSessionCache(128),
+	}
+	if *websocketURL == "" || !websocketSchemeIsSecure(*websocketURL) {
+		ca, err := os.ReadFile(*caFile)
+		if err != nil {
+			return fmt.Errorf("read CA: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(ca) {
+			return fmt.Errorf("parse CA: no certificates found")
+		}
+		tlsConfig.RootCAs = pool
 	}
 	socks, err := net.Listen("tcp", *socksListen)
 	if err != nil {
@@ -276,11 +295,11 @@ func runClient(args []string) error {
 	log.Printf("client SOCKS5 listening on %s; DNS listening on %s", *socksListen, *dnsListen)
 
 	if *mux {
-		go acceptMuxSocks(socks, *serverAddr, token, tlsConfig, *tcpBuffer)
+		go acceptMuxSocks(socks, *serverAddr, *websocketURL, token, tlsConfig, *tcpBuffer)
 	} else {
 		go acceptSocks(socks, *serverAddr, token, tlsConfig, *tcpBuffer)
 	}
-	go serveDNS(dns, *serverAddr, token, tlsConfig, *tcpBuffer)
+	go serveDNS(dns, *serverAddr, *websocketURL, token, tlsConfig, *tcpBuffer)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -466,7 +485,7 @@ func sendSocksReply(conn net.Conn, rep byte) error {
 	return writeAll(conn, []byte{5, rep, 0, 1, 0, 0, 0, 0, 0, 0})
 }
 
-func serveDNS(conn *net.UDPConn, serverAddr, token string, tlsConfig *tls.Config, tcpBuffer int) {
+func serveDNS(conn *net.UDPConn, serverAddr, websocketURL, token string, tlsConfig *tls.Config, tcpBuffer int) {
 	buffer := make([]byte, 65535)
 	for {
 		n, peer, err := conn.ReadFromUDP(buffer)
@@ -482,7 +501,7 @@ func serveDNS(conn *net.UDPConn, serverAddr, token string, tlsConfig *tls.Config
 		}
 		query := append([]byte(nil), buffer[:n]...)
 		go func() {
-			response, err := forwardDNS(serverAddr, token, tlsConfig, query, tcpBuffer)
+			response, err := forwardDNS(serverAddr, websocketURL, token, tlsConfig, query, tcpBuffer)
 			if err != nil {
 				log.Printf("DNS request from %s: %v", peer, err)
 				return
@@ -494,8 +513,8 @@ func serveDNS(conn *net.UDPConn, serverAddr, token string, tlsConfig *tls.Config
 	}
 }
 
-func forwardDNS(serverAddr, token string, tlsConfig *tls.Config, query []byte, tcpBuffer int) ([]byte, error) {
-	transport, err := dialTransport(serverAddr, token, tlsConfig, roleDNS, tcpBuffer)
+func forwardDNS(serverAddr, websocketURL, token string, tlsConfig *tls.Config, query []byte, tcpBuffer int) ([]byte, error) {
+	transport, err := dialClientTransport(websocketURL, serverAddr, token, tlsConfig, roleDNS, tcpBuffer)
 	if err != nil {
 		return nil, err
 	}
@@ -509,6 +528,13 @@ func forwardDNS(serverAddr, token string, tlsConfig *tls.Config, query []byte, t
 		return nil, errProtocol
 	}
 	return payload[1:], nil
+}
+
+func dialClientTransport(websocketURL, serverAddr, token string, tlsConfig *tls.Config, role byte, tcpBuffer int) (net.Conn, error) {
+	if websocketURL != "" {
+		return dialWebsocketTransport(websocketURL, token, tlsConfig, role, tcpBuffer)
+	}
+	return dialTransport(serverAddr, token, tlsConfig, role, tcpBuffer)
 }
 
 func dialTransport(serverAddr, token string, tlsConfig *tls.Config, role byte, tcpBuffer int) (net.Conn, error) {

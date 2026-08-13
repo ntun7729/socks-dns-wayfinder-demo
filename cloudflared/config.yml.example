@@ -1,11 +1,12 @@
-# Local-managed Cloudflare Tunnel configuration.
+# Local-managed Cloudflare Tunnel configuration for the domain-only WSS client.
 # Replace the tunnel UUID, credentials path, and hostname before use.
+# The s5dns origin upgrades the /s5dns path to WebSocket; other paths return 404.
 tunnel: REPLACE_WITH_TUNNEL_UUID
 credentials-file: /etc/cloudflared/REPLACE_WITH_TUNNEL_UUID.json
 
 ingress:
   - hostname: vpn.example.com
-    service: tcp://127.0.0.1:8443
+    service: http://127.0.0.1:9443
     originRequest:
       connectTimeout: 10s
   - service: http_status:404

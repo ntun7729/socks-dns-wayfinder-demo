@@ -14,7 +14,7 @@ getent group s5dns >/dev/null || groupadd --system s5dns
 getent passwd s5dns >/dev/null || useradd --system --no-create-home --shell /usr/sbin/nologin --gid s5dns s5dns
 getent group s5dns-client >/dev/null || groupadd --system s5dns-client
 getent passwd s5dns-client >/dev/null || useradd --system --no-create-home --shell /usr/sbin/nologin --gid s5dns-client s5dns-client
-install -d -m0750 -o root -g s5dns /etc/s5dns
+install -d -m0751 -o root -g s5dns /etc/s5dns
 
 if [[ -n "$state_dir" ]]; then
   for file in ca.crt server.crt; do

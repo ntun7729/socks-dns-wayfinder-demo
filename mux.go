@@ -60,12 +60,13 @@ type muxStream struct {
 	closeOnce   sync.Once
 }
 
-func acceptMuxSocks(ln net.Listener, serverAddr, token string, tlsConfig *tls.Config, tcpBuffer int) {
+func acceptMuxSocks(ln net.Listener, serverAddr, websocketURL, token string, tlsConfig *tls.Config, tcpBuffer int) {
 	manager := &muxManager{
-		serverAddr: serverAddr,
-		token:      token,
-		tlsConfig:  tlsConfig,
-		tcpBuffer:  tcpBuffer,
+		serverAddr:   serverAddr,
+		websocketURL: websocketURL,
+		token:        token,
+		tlsConfig:    tlsConfig,
+		tcpBuffer:    tcpBuffer,
 	}
 	for {
 		conn, err := ln.Accept()
@@ -300,16 +301,14 @@ func (s *muxSession) writeFrame(typ byte, streamID uint32, payload []byte) error
 	if len(payload) > maxMuxPayload {
 		return errProtocol
 	}
-	var header [9]byte
-	binary.BigEndian.PutUint32(header[0:4], uint32(len(payload)))
-	header[4] = typ
-	binary.BigEndian.PutUint32(header[5:9], streamID)
+	frame := make([]byte, 9+len(payload))
+	binary.BigEndian.PutUint32(frame[0:4], uint32(len(payload)))
+	frame[4] = typ
+	binary.BigEndian.PutUint32(frame[5:9], streamID)
+	copy(frame[9:], payload)
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if err := writeAll(s.conn, header[:]); err != nil {
-		return err
-	}
-	return writeAll(s.conn, payload)
+	return writeAll(s.conn, frame)
 }
 
 func (s *muxSession) closeWithError(err error) {
@@ -400,12 +399,8 @@ func (s *muxStream) deliver(data []byte) error {
 	select {
 	case s.recvCh <- data:
 		return nil
-	default:
-		s.recvClosed = true
-		s.recvErr = fmt.Errorf("stream receive buffer full")
-		close(s.recvCh)
-		close(s.done)
-		return s.recvErr
+	case <-s.done:
+		return io.ErrClosedPipe
 	}
 }
 
@@ -500,12 +495,13 @@ func (s *muxStream) finishRead(err error) {
 }
 
 type muxManager struct {
-	mu         sync.Mutex
-	current    *muxSession
-	serverAddr string
-	token      string
-	tlsConfig  *tls.Config
-	tcpBuffer  int
+	mu           sync.Mutex
+	current      *muxSession
+	serverAddr   string
+	websocketURL string
+	token        string
+	tlsConfig    *tls.Config
+	tcpBuffer    int
 }
 
 func (m *muxManager) openStream(payload []byte) (*muxStream, error) {
@@ -529,7 +525,7 @@ func (m *muxManager) getSession() (*muxSession, error) {
 	if m.current != nil && !m.current.isClosed() {
 		return m.current, nil
 	}
-	conn, err := dialTransport(m.serverAddr, m.token, m.tlsConfig, roleMuxSocks, m.tcpBuffer)
+	conn, err := dialClientTransport(m.websocketURL, m.serverAddr, m.token, m.tlsConfig, roleMuxSocks, m.tcpBuffer)
 	if err != nil {
 		return nil, err
 	}

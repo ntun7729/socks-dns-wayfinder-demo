@@ -1,6 +1,6 @@
 # s5dns
 
-`s5dns` is a small reference implementation of a **user-space SOCKS5 plus DNS tunnel** for Ubuntu. It has a single binary with `server` and `client` roles. The client exposes a loopback SOCKS5 listener and an explicit loopback DNS listener; each request is carried over its own outbound TLS connection to the server. The server performs the final TCP connect or UDP DNS lookup.
+`s5dns` is a small reference implementation of a **user-space SOCKS5 plus DNS tunnel** for Ubuntu. It has a single binary with `server` and `client` roles. The client exposes a loopback SOCKS5 listener and an explicit loopback DNS listener; optimized `-mux` mode carries streams over one authenticated session. That session can use raw TLS/TCP or a domain-only WSS transport through Cloudflare. The server performs the final TCP connect or UDP DNS lookup.
 
 This is intentionally a **proxy tunnel, not a transparent IP VPN**. It does not create a TUN/TAP device, change routes, rewrite `/etc/resolv.conf`, intercept packets, or forward arbitrary IP traffic. Applications must use SOCKS5, and DNS clients must be pointed explicitly at `127.0.0.1:5353`.
 
@@ -9,9 +9,9 @@ This is intentionally a **proxy tunnel, not a transparent IP VPN**. It does not 
 | Layer | Choice | Purpose |
 |---|---|---|
 | Local application interface | RFC 1928 SOCKS5 `CONNECT` | Supports IPv4, IPv6, and domain-name targets; domain names are resolved by the remote server. |
-| Local DNS interface | UDP DNS wire messages on `127.0.0.1:5353` | Sends one bounded DNS request per TLS connection to the configured upstream resolver. |
-| Tunnel transport | TCP with TLS 1.3 minimum | Provides confidentiality and integrity using Go’s standard `crypto/tls` package. |
-| Peer authentication | Private CA plus shared token | The client verifies the server certificate and name; the server checks a constant-time token comparison. |
+| Local DNS interface | UDP DNS wire messages on `127.0.0.1:5353` | Sends one bounded DNS request through the selected raw-TLS or WSS transport to the configured upstream resolver. |
+| Tunnel transport | Raw TLS/TCP or WSS over HTTPS | Raw mode uses TLS 1.3 minimum; domain-only mode uses RFC 6455 binary WebSocket frames through an HTTPS hostname. |
+| Peer authentication | Private CA where applicable plus shared token | Raw TLS and plain `ws://` can use the private CA; public `wss://` validates the Cloudflare certificate with system roots and uses the s5dns token for application authentication. |
 | Remote operations | TCP `CONNECT` and UDP DNS only | Keeps the first prototype narrow and avoids a control plane. |
 
 The SOCKS5 listener follows the standard version, address-type, and `CONNECT` request shape defined by [RFC 1928][1]. `BIND` and `UDP ASSOCIATE` are rejected in this version. The explicit DNS listener forwards the original DNS wire message to the server’s configured UDP upstream and returns the raw response. DNS messages are bounded to 4096 bytes; users who need larger responses should add TCP DNS or an EDNS-aware policy in a later iteration.
@@ -92,26 +92,25 @@ The sample units assume that the client and server run on the same host and use 
 
 ## Use through Cloudflare Tunnel
 
-Cloudflare Tunnel can carry the existing encrypted s5dns TCP endpoint as an **outer transport**. Cloudflare’s Arbitrary TCP mode requires `cloudflared` on both the host and client, a Cloudflare account with a site/hostname, and an Access policy for the published hostname.[5] The inner s5dns TLS certificate and shared token remain enabled, so Cloudflare Access and s5dns provide separate authentication layers. The sandbox is currently configured with `cloudflared` **2026.7.3**, tunnel `s5dns-mux`, and hostname `s5-edge-421b01.nyan.college`.
+The preferred Cloudflare integration is now **domain-only WSS**. The client connects directly to `wss://s5-edge-421b01.nyan.college/s5dns` and does not need `cloudflared` or a local TCP forwarder. The host-side `cloudflared` connector publishes the loopback HTTP origin at `127.0.0.1:9443`; the s5dns server upgrades only `/s5dns` to WebSocket and returns 404 for other paths. Cloudflare supports proxied WebSockets, while RFC 6455 defines the upgrade, binary framing, masking, and close behavior.[8] [9] The sandbox is configured with `cloudflared` **2026.7.3**, tunnel `s5dns-mux`, and hostname `s5-edge-421b01.nyan.college`.
 
 The host-side path is:
 
 ```text
-s5dns server 127.0.0.1:8443
+s5dns server 127.0.0.1:8443       (raw TLS compatibility)
+s5dns WebSocket HTTP 127.0.0.1:9443
         │
-        └── cloudflared Tunnel → Cloudflare Access hostname
+        └── cloudflared HTTP origin → Cloudflare HTTPS/WSS hostname
 ```
 
 On the Ubuntu host, install the package and prepare the service artifacts:
 
 ```bash
-sudo ./scripts/install-cloudflared.sh
-sudo install -m 0640 -o root -g cloudflared \
-  cloudflared/tunnel.env.example /etc/cloudflared/tunnel.env
-sudoedit /etc/cloudflared/tunnel.env
+sudo ./scripts/install-cloudflared.sh \
+  /home/ubuntu/.cloudflared/<TUNNEL_UUID>.json
 ```
 
-Replace `TUNNEL_TOKEN` with the token from the Cloudflare Zero Trust dashboard, configure the published hostname to route to `tcp://127.0.0.1:8443`, then start the services:
+For this local-managed tunnel, install the generated credential file and route the hostname to `http://127.0.0.1:9443`. The checked-in server unit starts both the raw TLS listener and the WebSocket origin:
 
 ```bash
 sudo systemctl enable --now s5dns-server.service
@@ -121,27 +120,17 @@ sudo systemctl status s5dns-server.service cloudflared-s5dns.service
 
 For a locally managed tunnel, use [`cloudflared/config.yml.example`](cloudflared/config.yml.example), replace its tunnel UUID, credentials path, and hostname, and follow Cloudflare’s `tunnel login`, `tunnel create`, DNS-route, and `tunnel run` workflow.[6] The configuration must end with the included catch-all rule.[7]
 
-On each client device, install `cloudflared`, then run the Access TCP forward. Cloudflare Access may open a browser for SSO:
+On each client device, install only the `s5dns` binary and copy the shared client token. No cloudflared process or private CA file is needed for public WSS:
 
 ```bash
-cloudflared access tcp \
-  --hostname s5-edge-421b01.nyan.college \
-  --url 127.0.0.1:18443
-```
-
-In a second terminal, point the s5dns client at the local forwarded port while preserving the inner certificate and token:
-
-```bash
-sudo ./s5dns client -mux \
-  -server 127.0.0.1:18443 \
-  -server-name localhost \
-  -ca ./state/ca.crt \
-  -token-file ./state/client.token \
+./s5dns client -mux \
+  -websocket-url wss://s5-edge-421b01.nyan.college/s5dns \
+  -token-file ./client.token \
   -socks-listen 127.0.0.1:1080 \
   -dns-listen 127.0.0.1:5353
 ```
 
-The checked-in helper [`cloudflared/access-client.example.sh`](cloudflared/access-client.example.sh) contains the same client-side pattern. The live non-secret configuration is in [`cloudflared/s5dns-mux.yml`](cloudflared/s5dns-mux.yml), while the tunnel credential remains outside the repository under `/etc/cloudflared/`. The connector is currently active with four registered Cloudflare edge connections. The end-to-end sandbox check passed through the generated hostname for SOCKS5 TCP and public DNS forwarding. A separate Cloudflare Access application policy should be added in the dashboard if you want SSO/MFA enforcement on the hostname; the inner s5dns token remains mandatory regardless.
+The checked-in helper [`cloudflared/domain-client.example.sh`](cloudflared/domain-client.example.sh) contains the domain-only client pattern. [`cloudflared/access-client.example.sh`](cloudflared/access-client.example.sh) remains available only for the older raw TCP compatibility path. The live non-secret configuration is in [`cloudflared/s5dns-mux.yml`](cloudflared/s5dns-mux.yml), while the tunnel credential remains outside the repository under `/etc/cloudflared/`. The connector is active with four registered Cloudflare edge connections, and the direct WSS sandbox check passed for SOCKS5 TCP and public DNS forwarding. Add a Cloudflare Access application policy for the hostname if you want outer SSO/MFA enforcement; the inner s5dns token remains mandatory regardless.
 
 ## Use the local interfaces
 
@@ -177,10 +166,11 @@ sudo ./tests/speed.sh
 
 This is a **relative local overhead measurement**, not an internet speed test. It excludes WAN latency, server geography, congestion, and external resolver performance. The original development-sandbox result was approximately **41.46 Gbit/s direct loopback versus 7.65 Gbit/s through SOCKS5/TLS**, or **81.55% lower median throughput**. After adding pooled `io.CopyBuffer` forwarding, 1 MiB TCP socket buffers, and a TLS client session cache, the latest multiplexed rerun measured **23.54 Gbit/s direct versus 5.85 Gbit/s through SOCKS5/TLS**, or **75.17% lower median throughput**. The direct loopback baseline varies substantially in this virtualized sandbox, so this should not be read as a definitive single-flow gain; the concurrent result is the more relevant measurement for the multiplexed design. Run it on the target Ubuntu host for meaningful capacity planning.
 
-A progressive streaming test is also included. It sends 40 paced 256 KiB chunks, verifies that HTTP-like headers and body bytes arrive before the full stream completes, and measures sustained delivery through multiplexed SOCKS5/TLS:
+A progressive streaming test is also included. It sends 40 paced 256 KiB chunks, verifies that HTTP-like headers and body bytes arrive before the full stream completes, and measures sustained delivery through multiplexed SOCKS5/TLS. The domain-only version uses the public WSS hostname and does not start cloudflared on the client:
 
 ```bash
 sudo ./tests/streaming.sh
+./tests/wss_streaming.sh
 ```
 
 The latest root sandbox run delivered **10 MiB** in approximately **0.993 seconds** at **84.44 Mbit/s**, with headers and the first body bytes arriving after approximately **5.4 ms**. This is a local streaming-path check, not a real internet video-streaming measurement.
@@ -193,11 +183,14 @@ sudo ./tests/concurrent.sh
 
 The latest root run completed successfully with approximately **5.92 Gbit/s aggregate throughput** and per-stream completion times around **82–90 ms**. This measures concurrent local capacity and multiplexing correctness, not WAN performance.
 
+The domain-only WSS benchmark is available as `tests/wss_speed.sh`. Its default is three 4 MiB samples because the public WebSocket path has substantial sandbox/edge latency; set `WSS_PAYLOAD_BYTES` and `WSS_RUNS` to change the workload. The latest sandbox run measured **19.04 Gbit/s direct loopback versus 0.78 Mbit/s through WSS plus s5dns**, with approximately **99.996% relative loss**. This is a Cloudflare-path measurement from the same sandbox, not an internet-client benchmark. The WSS streaming test delivered **10 MiB in 136.7 seconds at 0.614 Mbit/s**, with headers after **4.18 seconds** and the first body bytes after **5.02 seconds**. It passed the progressive-delivery assertion, but the result is too slow for practical video streaming in this environment and indicates that a WAN test and Cloudflare plan/network investigation are needed before deployment.
+
+
 ## Limitations and next decisions
 
-The client supports an optimized `-mux` mode (release `0.3.0`) that authenticates once and carries multiple SOCKS5 streams over one persistent TLS connection. It uses bounded frames, a single serialized writer, per-stream receive queues, stream reset and half-close handling, a maximum concurrent-stream limit, and reconnect-on-next-request behavior. Existing open TCP streams are not replayed after a session loss. The forwarding path also uses pooled `io.CopyBuffer` buffers, tunable TCP read/write buffers through `-tcp-buffer`, and a client TLS session cache for reconnects. It supports only TCP `CONNECT` and DNS-over-UDP forwarding, has no access-control list beyond the shared token, and does not offer transparent routing.
+The client supports an optimized `-mux` mode (release `0.3.0`) that authenticates once and carries multiple SOCKS5 streams over one persistent session. Raw mode uses TLS/TCP; domain-only mode uses RFC 6455 WSS binary frames through the Cloudflare hostname. The WebSocket adapter implements bounded messages, binary framing, client/server close behavior, periodic ping heartbeats, and outer public-certificate validation. Existing open TCP streams are not replayed after a session loss. The forwarding path also uses pooled `io.CopyBuffer` buffers, tunable TCP read/write buffers through `-tcp-buffer`, and a client TLS session cache for reconnects. It supports only TCP `CONNECT` and DNS-over-UDP forwarding, has no access-control list beyond the shared token, and does not offer transparent routing.
 
-The multiplexed session is still carried over one TCP connection, so TCP-level head-of-line blocking remains possible. A production follow-up would need stronger identity lifecycle management, policy controls, metrics, structured audit logs, careful DNS-over-TCP and EDNS behavior, and a decision about whether QUIC is justified for lossy or high-latency networks.
+The multiplexed session is still carried over one TCP connection, and WSS adds Cloudflare’s HTTP/WebSocket proxy path, so TCP-level head-of-line blocking and provider path variability remain possible. Cloudflare may close idle WebSockets, which is why the adapter sends heartbeat pings.[9] A production follow-up would need stronger identity lifecycle management, policy controls, metrics, structured audit logs, careful DNS-over-TCP and EDNS behavior, and a decision about whether QUIC is justified for lossy or high-latency networks.
 
 ## References
 
@@ -208,3 +201,5 @@ The multiplexed session is still carried over one TCP connection, so TCP-level h
 [5]: https://developers.cloudflare.com/cloudflare-one/access-controls/applications/non-http/cloudflared-authentication/arbitrary-tcp/ "Cloudflare One — Arbitrary TCP"
 [6]: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/local-management/create-local-tunnel/ "Cloudflare One — Create a locally-managed tunnel"
 [7]: https://developers.cloudflare.com/tunnel/advanced/local-management/configuration-file/ "Cloudflare Tunnel — Configuration file"
+[8]: https://datatracker.ietf.org/doc/html/rfc6455 "RFC 6455 — The WebSocket Protocol"
+[9]: https://developers.cloudflare.com/network/websockets/ "Cloudflare Network — WebSockets"

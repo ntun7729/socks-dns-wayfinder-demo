@@ -1,13 +1,13 @@
 [Unit]
 Description=s5dns local SOCKS5 and DNS client
-After=network-online.target s5dns-server.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=s5dns-client
 Group=s5dns-client
-ExecStart=/usr/local/bin/s5dns client -mux -server 127.0.0.1:8443 -server-name localhost -ca /etc/s5dns/ca.crt -token-file /etc/s5dns/client.token -socks-listen 127.0.0.1:1080 -dns-listen 127.0.0.1:5353
+ExecStart=/usr/local/bin/s5dns client -mux -websocket-url wss://s5-edge-421b01.nyan.college/s5dns -token-file /etc/s5dns/client.token -socks-listen 127.0.0.1:1080 -dns-listen 127.0.0.1:5353
 Restart=on-failure
 RestartSec=2s
 NoNewPrivileges=yes

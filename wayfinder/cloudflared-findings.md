@@ -24,3 +24,14 @@ Cloudflare’s package repository lists Ubuntu 24.04 Noble as supported and reco
 
 [3]: https://pkg.cloudflare.com/ "Cloudflare package repository"
 [4]: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/local-management/create-local-tunnel/ "Cloudflare One — Create a locally-managed tunnel"
+
+## Domain-only WebSocket transport findings
+
+The domain-only client design will use an HTTPS WebSocket upgrade to a dedicated origin path such as `/s5dns`. RFC 6455 requires the HTTP Upgrade handshake, a random 16-byte `Sec-WebSocket-Key`, the server’s `Sec-WebSocket-Accept` response, binary data frames, client-to-server masking, and orderly Close/Ping/Pong control frames.[5] The implementation must reject non-WebSocket requests and enforce a fixed path and an application-level s5dns authentication handshake inside the upgraded connection.
+
+Cloudflare’s current WebSocket guidance states that proxied WebSocket connections are supported. It recommends enabling WebSockets in the zone Network settings, notes that a WebSocket is counted as one long-lived HTTP request, and warns that idle connections are closed when no data is transmitted in either direction, so the mux transport should send periodic heartbeat frames.[6]
+
+The Cloudflare HTTPS ingress should route `https://127.0.0.1:9443` (or an HTTP loopback origin if the origin TLS boundary is intentionally delegated to Cloudflare) to the generated hostname. The domain-only s5dns client will connect directly to `wss://s5-edge-421b01.nyan.college/s5dns` and will not require cloudflared on the client device. The inner s5dns token remains necessary; the Cloudflare hostname is not itself an authentication substitute.
+
+[5]: https://datatracker.ietf.org/doc/html/rfc6455 "RFC 6455 — The WebSocket Protocol"
+[6]: https://developers.cloudflare.com/network/websockets/ "Cloudflare Network — WebSockets"
