@@ -88,26 +88,37 @@ func runServer(args []string) error {
 	if err != nil {
 		return fmt.Errorf("read shared credential: %w", err)
 	}
-	cert, err := tls.LoadX509KeyPair(*certFile, *keyFile)
-	if err != nil {
-		return fmt.Errorf("load certificate and key: %w", err)
+	var ln net.Listener
+	if *listen != "" {
+		cert, err := tls.LoadX509KeyPair(*certFile, *keyFile)
+		if err != nil {
+			return fmt.Errorf("load certificate and key: %w", err)
+		}
+		cfg := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS13,
+		}
+		ln, err = tls.Listen("tcp", *listen, cfg)
+		if err != nil {
+			return fmt.Errorf("listen: %w", err)
+		}
+		defer ln.Close()
+		log.Printf("server TLS listening on %s; DNS upstream %s", *listen, *dnsUpstream)
+	} else {
+		log.Printf("server TLS disabled; running WebSocket-only; DNS upstream %s", *dnsUpstream)
 	}
-	cfg := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS13,
+	if *wsListen == "" && ln == nil {
+		return fmt.Errorf("at least one of -listen or -ws-listen must be enabled")
 	}
-	ln, err := tls.Listen("tcp", *listen, cfg)
-	if err != nil {
-		return fmt.Errorf("listen: %w", err)
-	}
-	defer ln.Close()
-	log.Printf("server listening on %s; DNS upstream %s", *listen, *dnsUpstream)
 	if *wsListen != "" {
 		go func() {
 			if err := serveWebsocket(*wsListen, token, *dnsUpstream, *tcpBuffer); err != nil {
 				log.Printf("WebSocket origin stopped: %v", err)
 			}
 		}()
+	}
+	if ln == nil {
+		select {}
 	}
 
 	for {

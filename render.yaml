@@ -1,12 +1,13 @@
 services:
-  - type: worker
+  - type: web
     name: s5dns-render-test
     runtime: docker
     dockerfilePath: ./Dockerfile.render
     dockerContext: .
     dockerCommand: /usr/local/bin/render-supervisor
     region: singapore
-    plan: starter
+    plan: free
+    healthCheckPath: /healthz
     envVars:
       - key: S5DNS_PASSWORD
         sync: false

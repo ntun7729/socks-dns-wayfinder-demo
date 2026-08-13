@@ -96,19 +96,20 @@ The image intentionally does not contain server certificates, private keys, or c
 
 ### Render test deployment
 
-The repository also includes [`render.yaml`](render.yaml) and [`Dockerfile.render`](Dockerfile.render) for a Render test. The Render service is a **background worker**, not a public web service: it runs s5dns and makes outbound Cloudflare connections, while the public client continues to use the Cloudflare WSS hostname. Render documents background workers as long-running services that do not receive inbound traffic, which is the appropriate model for an outbound-only tunnel connector.[10] [11]
+The repository also includes [`render.yaml`](render.yaml) and [`Dockerfile.render`](Dockerfile.render) for a Render test. The Render service is a **Web Service** so it can use Render’s free web-service tier and expose a health endpoint. The public client still reaches the s5dns WebSocket origin through Cloudflare; Render does not need to expose the tunnel origin publicly.[10] [11]
 
-Create the service from the repository Blueprint or create a Render background worker using `Dockerfile.render`. If creating it manually, set **Dockerfile Path** to `./Dockerfile.render` and **Docker Command** to `/usr/local/bin/render-supervisor`; do not use the standard `Dockerfile` and do not leave the service with a bare `s5dns` command. Add these runtime values in the Render dashboard:
+Create the service from the repository Blueprint or create a Render Web Service manually. Set **Dockerfile Path** to `./Dockerfile.render` and **Docker Command** to `/usr/local/bin/render-supervisor`; do not use the standard `Dockerfile` and do not leave the service with a bare `s5dns` command. Set the health-check path to `/healthz`. No `server.crt` or `server.key` files are required for this WSS-only Render mode.
 
 | Render setting | Value |
 |---|---|
+| Service type | Web Service |
+| Plan | Free |
 | `S5DNS_PASSWORD` | The same shared password/UUID used by clients; mark it secret. |
 | `CLOUDFLARED_TUNNEL_TOKEN` | Optional remotely-managed Cloudflare tunnel token; leave empty to run only s5dns. |
-| Secret file `server.crt` | The server certificate contents. Render makes it available at `/etc/secrets/server.crt`. |
-| Secret file `server.key` | The private key contents. Render makes it available at `/etc/secrets/server.key`. |
 | `S5DNS_DNS_UPSTREAM` | Optional, defaults to `1.1.1.1:53`. |
+| Health check path | `/healthz` |
 
-Render supplies environment variables at runtime and supports secret files for Docker services.[12] A Cloudflare remotely-managed tunnel can be run with only its tunnel token.[13] When `CLOUDFLARED_TUNNEL_TOKEN` is empty, the Render supervisor starts only s5dns. When it is set, it starts `cloudflared tunnel --no-autoupdate run --token ...` in the same container, where the tunnel's origin remains `127.0.0.1:9443`.
+Render supplies environment variables to Docker services at runtime.[12] A Cloudflare remotely-managed tunnel can be run with only its tunnel token.[13] When `CLOUDFLARED_TUNNEL_TOKEN` is empty, the Render supervisor starts s5dns in WebSocket-only mode and listens on Render’s `PORT` for `/healthz`. When it is set, it additionally starts `cloudflared tunnel --no-autoupdate run --token ...` in the same container, with the s5dns origin at `127.0.0.1:9443`.
 
 The principal Render image is intentionally separate from the small GHCR s5dns image because `cloudflared` needs its runtime base libraries. The Render test image includes both binaries and is larger; the standard `Dockerfile` remains the compact image for ordinary client/server deployments.
 
