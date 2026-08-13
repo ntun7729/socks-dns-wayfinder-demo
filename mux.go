@@ -22,8 +22,10 @@ const (
 	muxFramePing
 	muxFramePong
 	muxFrameGoAway
-	muxDataChunk = maxMuxPayload
-	muxRecvSlots = 32
+	muxDataChunk       = maxMuxPayload
+	muxRecvSlots       = 32
+	muxConnectAttempts = 3
+	muxRetryDelay      = 500 * time.Millisecond
 )
 
 type muxFrame struct {
@@ -505,18 +507,27 @@ type muxManager struct {
 }
 
 func (m *muxManager) openStream(payload []byte) (*muxStream, error) {
-	for attempt := 0; attempt < 2; attempt++ {
+	var lastErr error
+	for attempt := 0; attempt < muxConnectAttempts; attempt++ {
 		session, err := m.getSession()
-		if err != nil {
-			return nil, err
-		}
-		stream, err := session.openStream(payload)
 		if err == nil {
-			return stream, nil
+			stream, streamErr := session.openStream(payload)
+			if streamErr == nil {
+				return stream, nil
+			}
+			lastErr = streamErr
+			m.invalidate(session)
+		} else {
+			lastErr = err
 		}
-		m.invalidate(session)
+		if attempt+1 < muxConnectAttempts {
+			time.Sleep(muxRetryDelay)
+		}
 	}
-	return nil, io.ErrClosedPipe
+	if lastErr == nil {
+		lastErr = io.ErrClosedPipe
+	}
+	return nil, lastErr
 }
 
 func (m *muxManager) getSession() (*muxSession, error) {
