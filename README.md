@@ -11,7 +11,7 @@ This is intentionally a **proxy tunnel, not a transparent IP VPN**. It does not 
 | Local application interface | RFC 1928 SOCKS5 `CONNECT` | Supports IPv4, IPv6, and domain-name targets; domain names are resolved by the remote server. |
 | Local DNS interface | UDP DNS wire messages on `127.0.0.1:5353` | Sends one bounded DNS request through the selected raw-TLS or WSS transport to the configured upstream resolver. |
 | Tunnel transport | Raw TLS/TCP or WSS over HTTPS | Raw mode uses TLS 1.3 minimum; domain-only mode uses RFC 6455 binary WebSocket frames through an HTTPS hostname. |
-| Peer authentication | Private CA where applicable plus shared token | Raw TLS and plain `ws://` can use the private CA; public `wss://` validates the Cloudflare certificate with system roots and uses the s5dns token for application authentication. |
+| Peer authentication | Private CA where applicable plus shared credential | Raw TLS and plain `ws://` can use the private CA; public `wss://` validates the Cloudflare certificate with system roots and uses the shared s5dns password/UUID for application authentication. The credential may come from an environment variable, a command-line flag, or a legacy token file. |
 | Remote operations | TCP `CONNECT` and UDP DNS only | Keeps the first prototype narrow and avoids a control plane. |
 
 The SOCKS5 listener follows the standard version, address-type, and `CONNECT` request shape defined by [RFC 1928][1]. `BIND` and `UDP ASSOCIATE` are rejected in this version. The explicit DNS listener forwards the original DNS wire message to the server’s configured UDP upstream and returns the raw response. DNS messages are bounded to 4096 bytes; users who need larger responses should add TCP DNS or an EDNS-aware policy in a later iteration.
@@ -29,8 +29,70 @@ go build -trimpath -o s5dns .
 The binary uses only the Go standard library and is suitable for a static Linux build if desired:
 
 ```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o s5dns .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w -buildid=' -o s5dns .
 ```
+
+### Password/UUID authentication
+
+The shared token is an application credential rather than a human login password. You can use any high-entropy random value, such as a UUID, on both ends. The preferred form is an environment variable because it does not appear in the process list:
+
+```bash
+export S5DNS_PASSWORD='replace-with-the-same-random-uuid-on-both-hosts'
+
+./s5dns server \
+  -password-env S5DNS_PASSWORD \
+  -cert ./state/server.crt \
+  -key ./state/server.key
+
+./s5dns client -mux \
+  -websocket-url wss://s5-edge-421b01.nyan.college/s5dns \
+  -password-env S5DNS_PASSWORD
+```
+
+The `-password UUID` flag is also supported for short-lived manual tests, but it is visible to local users through process inspection. `-token-file` remains supported for existing systemd installations and older deployments; credential precedence is direct `-password`, then `-password-env`, then `-token-file`.
+
+## Docker and GHCR image
+
+The repository includes a multi-stage `Dockerfile` that produces a `scratch` image containing only the stripped static binary and the public CA bundle. It has no shell, package manager, or build tool in the final layer. The workflow in [`.github/workflows/publish-ghcr.yml`](.github/workflows/publish-ghcr.yml) publishes `linux/amd64` and `linux/arm64` images to GHCR on pushes to `main`, version tags such as `v0.5.0`, and manual workflow runs.
+
+After the first successful workflow run, pull the image with:
+
+```bash
+docker pull ghcr.io/ntun7729/socks-dns-wayfinder-demo:latest
+```
+
+For a WSS client, the compact container only needs the shared password in an environment variable. It exposes SOCKS5 on port 1080 and explicit DNS on port 5353:
+
+```bash
+docker run --rm --name s5dns-client \
+  --env S5DNS_PASSWORD='replace-with-the-same-random-uuid' \
+  -p 127.0.0.1:1080:1080/tcp \
+  -p 127.0.0.1:5353:5353/udp \
+  ghcr.io/ntun7729/socks-dns-wayfinder-demo:latest \
+  client -mux \
+    -websocket-url wss://s5-edge-421b01.nyan.college/s5dns \
+    -password-env S5DNS_PASSWORD \
+    -socks-listen 0.0.0.0:1080 \
+    -dns-listen 0.0.0.0:5353
+```
+
+For a server container behind the existing host-side `cloudflared` connector, use host networking so the WebSocket origin remains at `127.0.0.1:9443`. Mount the certificate and key read-only, and keep the key readable by UID/GID `65532` or use a separate secret mechanism supported by your container runtime:
+
+```bash
+docker run -d --restart unless-stopped --name s5dns-server \
+  --network host \
+  --env S5DNS_PASSWORD='replace-with-the-same-random-uuid' \
+  --mount type=bind,src=/etc/s5dns/server.crt,dst=/etc/s5dns/server.crt,readonly \
+  --mount type=bind,src=/etc/s5dns/server.key,dst=/etc/s5dns/server.key,readonly \
+  ghcr.io/ntun7729/socks-dns-wayfinder-demo:latest \
+  server -listen 127.0.0.1:8443 \
+    -cert /etc/s5dns/server.crt \
+    -key /etc/s5dns/server.key \
+    -password-env S5DNS_PASSWORD \
+    -ws-listen 127.0.0.1:9443
+```
+
+The image intentionally does not contain server certificates, private keys, or credentials. Supply those at runtime through read-only mounts and environment/secret injection.
 
 ## Generate demo credentials
 
@@ -120,12 +182,13 @@ sudo systemctl status s5dns-server.service cloudflared-s5dns.service
 
 For a locally managed tunnel, use [`cloudflared/config.yml.example`](cloudflared/config.yml.example), replace its tunnel UUID, credentials path, and hostname, and follow Cloudflare’s `tunnel login`, `tunnel create`, DNS-route, and `tunnel run` workflow.[6] The configuration must end with the included catch-all rule.[7]
 
-On each client device, install only the `s5dns` binary and copy the shared client token. No cloudflared process or private CA file is needed for public WSS:
+On each client device, install only the `s5dns` binary and set the same shared password/UUID. No cloudflared process, private CA file, or client token file is needed for public WSS:
 
 ```bash
+export S5DNS_PASSWORD='the-same-random-uuid-configured-on-the-server'
 ./s5dns client -mux \
   -websocket-url wss://s5-edge-421b01.nyan.college/s5dns \
-  -token-file ./client.token \
+  -password-env S5DNS_PASSWORD \
   -socks-listen 127.0.0.1:1080 \
   -dns-listen 127.0.0.1:5353
 ```

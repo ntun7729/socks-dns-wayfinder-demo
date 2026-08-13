@@ -1,0 +1,13 @@
+.git
+.github
+state
+s5dns
+s5dns-static
+*.token
+*.key
+*.crt
+cloudflared
+systemd
+tests
+wayfinder
+README.md

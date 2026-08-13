@@ -74,7 +74,9 @@ func runServer(args []string) error {
 	listen := fs.String("listen", "0.0.0.0:8443", "TLS listen address")
 	certFile := fs.String("cert", "/etc/s5dns/server.crt", "server certificate PEM")
 	keyFile := fs.String("key", "/etc/s5dns/server.key", "server private key PEM")
-	tokenFile := fs.String("token-file", "/etc/s5dns/server.token", "shared token file")
+	tokenFile := fs.String("token-file", "/etc/s5dns/server.token", "shared token file fallback")
+	password := fs.String("password", "", "shared password/UUID; visible in process listings, prefer -password-env")
+	passwordEnv := fs.String("password-env", "S5DNS_PASSWORD", "environment variable containing the shared password/UUID")
 	dnsUpstream := fs.String("dns-upstream", "1.1.1.1:53", "upstream DNS UDP address")
 	wsListen := fs.String("ws-listen", "127.0.0.1:9443", "loopback WebSocket HTTP origin address; empty disables it")
 	tcpBuffer := fs.Int("tcp-buffer", defaultTCPBuffer, "TCP read/write buffer size in bytes")
@@ -82,9 +84,9 @@ func runServer(args []string) error {
 		return err
 	}
 
-	token, err := readToken(*tokenFile)
+	token, err := resolveCredential(*password, *passwordEnv, *tokenFile)
 	if err != nil {
-		return fmt.Errorf("read token: %w", err)
+		return fmt.Errorf("read shared credential: %w", err)
 	}
 	cert, err := tls.LoadX509KeyPair(*certFile, *keyFile)
 	if err != nil {
@@ -242,7 +244,9 @@ func runClient(args []string) error {
 	serverAddr := fs.String("server", "127.0.0.1:8443", "remote TLS server address")
 	serverName := fs.String("server-name", "localhost", "TLS server name")
 	caFile := fs.String("ca", "/etc/s5dns/ca.crt", "trusted CA certificate PEM for raw TLS or ws transport; not needed for wss")
-	tokenFile := fs.String("token-file", "/etc/s5dns/client.token", "shared token file")
+	tokenFile := fs.String("token-file", "/etc/s5dns/client.token", "shared token file fallback")
+	password := fs.String("password", "", "shared password/UUID; visible in process listings, prefer -password-env")
+	passwordEnv := fs.String("password-env", "S5DNS_PASSWORD", "environment variable containing the shared password/UUID")
 	socksListen := fs.String("socks-listen", "127.0.0.1:1080", "local SOCKS5 TCP address")
 	dnsListen := fs.String("dns-listen", "127.0.0.1:5353", "local DNS UDP address")
 	websocketURL := fs.String("websocket-url", "", "domain-only WebSocket URL, for example wss://edge.example.com/s5dns")
@@ -262,9 +266,9 @@ func runClient(args []string) error {
 			*tcpBuffer = defaultWebsocketTCPBuffer
 		}
 	}
-	token, err := readToken(*tokenFile)
+	token, err := resolveCredential(*password, *passwordEnv, *tokenFile)
 	if err != nil {
-		return fmt.Errorf("read token: %w", err)
+		return fmt.Errorf("read shared credential: %w", err)
 	}
 	tlsConfig := &tls.Config{
 		ServerName:         *serverName,
@@ -655,19 +659,31 @@ func writeAll(w io.Writer, data []byte) error {
 	return nil
 }
 
-func readToken(path string) (string, error) {
-	if path == "" {
-		return "", fmt.Errorf("token file is required")
+func resolveCredential(password, passwordEnv, tokenFile string) (string, error) {
+	if password != "" {
+		return validateCredential(password)
 	}
-	data, err := os.ReadFile(path)
+	if passwordEnv != "" {
+		if value, ok := os.LookupEnv(passwordEnv); ok && strings.TrimSpace(value) != "" {
+			return validateCredential(value)
+		}
+	}
+	if tokenFile == "" {
+		return "", fmt.Errorf("password, password environment variable, or token file is required")
+	}
+	data, err := os.ReadFile(tokenFile)
 	if err != nil {
 		return "", err
 	}
-	token := strings.TrimSpace(string(data))
-	if token == "" || len(token) > maxTokenLength {
-		return "", fmt.Errorf("token must be 1..%d bytes", maxTokenLength)
+	return validateCredential(string(data))
+}
+
+func validateCredential(value string) (string, error) {
+	credential := strings.TrimSpace(value)
+	if credential == "" || len(credential) > maxTokenLength {
+		return "", fmt.Errorf("shared credential must be 1..%d bytes", maxTokenLength)
 	}
-	return token, nil
+	return credential, nil
 }
 
 func mapDialError(err error) byte {
