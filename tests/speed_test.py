@@ -38,8 +38,8 @@ def recv_exact_bytes(sock: socket.socket, size: int) -> bytes:
     return b"".join(chunks)
 
 
-def socks_connect(proxy_host: str, proxy_port: int, target_host: str, target_port: int) -> socket.socket:
-    sock = socket.create_connection((proxy_host, proxy_port), timeout=10)
+def socks_connect(proxy_host: str, proxy_port: int, target_host: str, target_port: int, timeout: float) -> socket.socket:
+    sock = socket.create_connection((proxy_host, proxy_port), timeout=timeout)
     sock.sendall(b"\x05\x01\x00")
     if recv_exact_bytes(sock, 2) != b"\x05\x00":
         raise RuntimeError("SOCKS no-auth negotiation failed")
@@ -47,8 +47,8 @@ def socks_connect(proxy_host: str, proxy_port: int, target_host: str, target_por
     return sock
 
 
-def direct_connect(target_host: str, target_port: int) -> socket.socket:
-    return socket.create_connection((target_host, target_port), timeout=10)
+def direct_connect(target_host: str, target_port: int, timeout: float) -> socket.socket:
+    return socket.create_connection((target_host, target_port), timeout=timeout)
 
 
 def measure(args: argparse.Namespace) -> dict:
@@ -57,9 +57,9 @@ def measure(args: argparse.Namespace) -> dict:
     for run in range(args.runs):
         started = time.perf_counter()
         if args.proxy_port:
-            sock = socks_connect(args.proxy_host, args.proxy_port, args.target_host, args.target_port)
+            sock = socks_connect(args.proxy_host, args.proxy_port, args.target_host, args.target_port, args.timeout)
         else:
-            sock = direct_connect(args.target_host, args.target_port)
+            sock = direct_connect(args.target_host, args.target_port, args.timeout)
         with sock:
             remaining = payload_bytes
             while remaining:
@@ -114,6 +114,7 @@ def main() -> None:
     measure_parser.add_argument("--proxy-port", type=int)
     measure_parser.add_argument("--bytes", type=int, required=True)
     measure_parser.add_argument("--runs", type=int, default=3)
+    measure_parser.add_argument("--timeout", type=float, default=10.0)
 
     args = parser.parse_args()
     if args.command == "sink":
