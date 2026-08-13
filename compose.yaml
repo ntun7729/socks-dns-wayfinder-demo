@@ -1,0 +1,42 @@
+services:
+  s5dns-server:
+    image: ${S5DNS_IMAGE:-ghcr.io/ntun7729/socks-dns-wayfinder-demo:latest}
+    container_name: s5dns-server
+    restart: unless-stopped
+    network_mode: host
+    user: "0:0"
+    environment:
+      S5DNS_PASSWORD: ${S5DNS_PASSWORD:?set S5DNS_PASSWORD to the shared password/UUID}
+    volumes:
+      - ${S5DNS_CONFIG_DIR:-/etc/s5dns}/server.crt:/etc/s5dns/server.crt:ro
+      - ${S5DNS_CONFIG_DIR:-/etc/s5dns}/server.key:/etc/s5dns/server.key:ro
+    command:
+      - server
+      - -listen
+      - ${S5DNS_LISTEN:-127.0.0.1:8443}
+      - -cert
+      - /etc/s5dns/server.crt
+      - -key
+      - /etc/s5dns/server.key
+      - -password-env
+      - S5DNS_PASSWORD
+      - -dns-upstream
+      - ${S5DNS_DNS_UPSTREAM:-1.1.1.1:53}
+      - -ws-listen
+      - ${S5DNS_WS_LISTEN:-127.0.0.1:9443}
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.7.3
+    container_name: cloudflared-s5dns
+    profiles:
+      - cloudflare
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - s5dns-server
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+      - --token
+      - ${CLOUDFLARED_TUNNEL_TOKEN:-}

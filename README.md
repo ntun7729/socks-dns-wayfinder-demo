@@ -94,6 +94,35 @@ docker run -d --restart unless-stopped --name s5dns-server \
 
 The image intentionally does not contain server certificates, private keys, or credentials. Supply those at runtime through read-only mounts and environment/secret injection.
 
+### Optional Cloudflare Tunnel profile
+
+[`compose.yaml`](compose.yaml) keeps Cloudflare optional. The `s5dns-server` service runs normally without `cloudflared`; the `cloudflared` service is placed in a separate Compose profile. The helper [`scripts/compose-up.sh`](scripts/compose-up.sh) starts only s5dns when no tunnel token is present, and automatically enables the Cloudflare profile when `CLOUDFLARED_TUNNEL_TOKEN` is set.
+
+For normal operation without Cloudflare:
+
+```bash
+export S5DNS_PASSWORD='the-same-random-uuid-used-by-the-client'
+export S5DNS_CONFIG_DIR=/etc/s5dns
+./scripts/compose-up.sh
+```
+
+To additionally start the Cloudflare connector, provide the tunnel token and run the same command:
+
+```bash
+export CLOUDFLARED_TUNNEL_TOKEN='paste-your-cloudflare-tunnel-token'
+./scripts/compose-up.sh
+```
+
+The equivalent explicit commands are `docker compose up -d` without the token and `docker compose --profile cloudflare up -d` with the token.
+
+To stop only the optional connector while leaving s5dns running:
+
+```bash
+docker compose stop cloudflared
+```
+
+When `CLOUDFLARED_TUNNEL_TOKEN` is absent, `docker compose up -d s5dns-server` does not attempt to start Cloudflare. If the `cloudflare` profile is explicitly enabled without a token, the connector exits instead of silently creating an unauthenticated tunnel.
+
 ## Generate demo credentials
 
 Run the helper on the machine that will host the server certificate and shared token:
