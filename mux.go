@@ -22,7 +22,7 @@ const (
 	muxFramePing
 	muxFramePong
 	muxFrameGoAway
-	muxDataChunk = 64 << 10
+	muxDataChunk = maxMuxPayload
 	muxRecvSlots = 32
 )
 

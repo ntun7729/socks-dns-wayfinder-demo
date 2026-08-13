@@ -21,23 +21,24 @@ import (
 )
 
 const (
-	authMagic        = "S5D1"
-	roleSocks        = 1
-	roleDNS          = 2
-	roleMuxSocks     = 3
-	kindConnect      = 1
-	kindDNS          = 2
-	kindStatus       = 3
-	maxFrame         = 1 << 20
-	maxDNSMessage    = 4096
-	ioTimeout        = 10 * time.Second
-	dialTimeout      = 5 * time.Second
-	maxTokenLength   = 4096
-	maxMuxPayload    = 256 << 10
-	maxMuxStreams    = 1024
-	muxOpenTimeout   = 5 * time.Second
-	defaultTCPBuffer = 1 << 20
-	copyBufferSize   = 256 << 10
+	authMagic                 = "S5D1"
+	roleSocks                 = 1
+	roleDNS                   = 2
+	roleMuxSocks              = 3
+	kindConnect               = 1
+	kindDNS                   = 2
+	kindStatus                = 3
+	maxFrame                  = 1 << 20
+	maxDNSMessage             = 4096
+	ioTimeout                 = 10 * time.Second
+	dialTimeout               = 5 * time.Second
+	maxTokenLength            = 4096
+	maxMuxPayload             = 256 << 10
+	maxMuxStreams             = 1024
+	muxOpenTimeout            = 5 * time.Second
+	defaultTCPBuffer          = 1 << 20
+	defaultWebsocketTCPBuffer = 8 << 20
+	copyBufferSize            = 256 << 10
 )
 
 var errProtocol = errors.New("protocol error")
@@ -57,7 +58,7 @@ func main() {
 			log.Fatal(err)
 		}
 	case "version":
-		fmt.Println("s5dns 0.3.0")
+		fmt.Println("s5dns 0.4.0")
 	default:
 		usage()
 		os.Exit(2)
@@ -256,6 +257,9 @@ func runClient(args []string) error {
 	if *websocketURL != "" {
 		if _, err := validateWebsocketURL(*websocketURL); err != nil {
 			return err
+		}
+		if *tcpBuffer == defaultTCPBuffer {
+			*tcpBuffer = defaultWebsocketTCPBuffer
 		}
 	}
 	token, err := readToken(*tokenFile)
