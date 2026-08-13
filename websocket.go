@@ -154,6 +154,10 @@ func serveWebsocket(listen, token, dnsUpstream string, tcpBuffer int) error {
 		conn := newWebsocketNetConn(ws)
 		go handleWebsocketConn(conn, token, dnsUpstream, tcpBuffer)
 	})
+	handler.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("ok\n"))
+	})
 	handler.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})
