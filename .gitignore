@@ -1,0 +1,10 @@
+# local builds
+s5dns
+s5dns-static
+
+# generated credentials and test state
+state/
+
+# Python cache
+__pycache__/
+*.pyc
