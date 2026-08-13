@@ -4,6 +4,7 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile.render
     dockerContext: .
+    dockerCommand: /usr/local/bin/render-supervisor
     region: singapore
     plan: starter
     envVars:

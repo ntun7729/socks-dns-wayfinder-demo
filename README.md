@@ -98,7 +98,7 @@ The image intentionally does not contain server certificates, private keys, or c
 
 The repository also includes [`render.yaml`](render.yaml) and [`Dockerfile.render`](Dockerfile.render) for a Render test. The Render service is a **background worker**, not a public web service: it runs s5dns and makes outbound Cloudflare connections, while the public client continues to use the Cloudflare WSS hostname. Render documents background workers as long-running services that do not receive inbound traffic, which is the appropriate model for an outbound-only tunnel connector.[10] [11]
 
-Create the service from the repository Blueprint or create a Render background worker using `Dockerfile.render`. Add these runtime values in the Render dashboard:
+Create the service from the repository Blueprint or create a Render background worker using `Dockerfile.render`. If creating it manually, set **Dockerfile Path** to `./Dockerfile.render` and **Docker Command** to `/usr/local/bin/render-supervisor`; do not use the standard `Dockerfile` and do not leave the service with a bare `s5dns` command. Add these runtime values in the Render dashboard:
 
 | Render setting | Value |
 |---|---|
